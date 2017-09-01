@@ -5,6 +5,7 @@ import socket
 import struct
 import numpy as np
 from gym import Env
+from keras.callbacks import Callback
 from keras.layers import Dense, Flatten, Dropout, Conv2D, MaxPooling2D, Input
 from keras.layers.merge import concatenate
 from keras.models import Model
@@ -56,7 +57,7 @@ class BastetClient(object):
             self.buffer += self.socket.recv(4096)
         json_string = self.buffer[:line_end]
         self.buffer = self.buffer[line_end:]
-        return json.loads(json_string)
+        return json.loads(json_string.decode('ascii'))
 
 
 class BastetEnv(Env):
@@ -80,6 +81,7 @@ class BastetEnv(Env):
         self.points = 0
         self.lines = 0
         self.level = 0
+        # self.block_changed = False
 
         self.client.send_enter()
 
@@ -112,6 +114,7 @@ class BastetEnv(Env):
                 self.next_block = info['block']
             elif info_type == 'current_block':
                 self.current_block = info['block']
+                # self.block_changed = True
             elif info_type == 'score':
                 self.points = info['points']
                 self.lines = info['lines']
@@ -127,6 +130,9 @@ class BastetEnv(Env):
                 assert info['type'] == 'send_me_a_key'
                 self.done = True
                 break
+            elif info_type == 'keys':
+                self.keys = [info['down'], info['drop'], info['left'], info['right'], info['rotate_counterclockwise'],
+                             info['rotate_clockwise'], b'\x00\x00\x00\x00']
             else:
                 raise TypeError(info_type)
 
@@ -134,10 +140,14 @@ class BastetEnv(Env):
         prev_points = self.points
         self.client.send_key(self.keys[action])
         self.wait_progress()
+        reward = self.points - prev_points
+        # if self.block_changed:
+        #     reward += 1
+        #     self.block_changed = False
         return [self.well,
                 np.stack((to_categorical(self.current_block, num_classes=7)[0, :],
                           to_categorical(self.next_block, num_classes=7)[0, :]))], \
-               self.points - prev_points, \
+               reward, \
                self.done, \
                {}
 
@@ -169,19 +179,30 @@ def build_model(bastet_env):
 
 def main():
     env = BastetEnv(os.path.expanduser('~/CLionProjects/bastet-remotable/cmake-build-debug/bastet'), speed=32)
-    memory = SequentialMemory(limit=50000, window_length=1)
+    memory = SequentialMemory(limit=10000, window_length=1)
     policy = BoltzmannQPolicy()
     model = build_model(env)
     processor = MultiInputProcessor(nb_inputs=2)
     dqn = DQNAgent(model=model, nb_actions=BastetEnv.nb_actions, memory=memory, processor=processor,
-                   nb_steps_warmup=10,
+                   nb_steps_warmup=100,
                    enable_dueling_network=True, dueling_type='avg',
                    # target_model_update=1e-2,
                    policy=policy)
     dqn.compile(Adam(lr=1e-3), metrics=['mae'])
-    # dqn.load_weights("./save/maze-dqn.h5")
-    dqn.fit(env, nb_steps=50000, visualize=False, verbose=2)
-    dqn.save_weights("./save/maze-dqn.h5")
+    if os.path.exists("./save/maze-dqn.h5"):
+        dqn.load_weights("./save/maze-dqn.h5")
+    ctrl_c_logger = CtrlCLogger()
+    while True:
+        dqn.fit(env, nb_steps=10000, visualize=False, verbose=1, callbacks=[ctrl_c_logger])
+        if ctrl_c_logger.got_ctrl_c:
+            break
+        dqn.save_weights("./save/maze-dqn.h5", overwrite=True)
+        env = BastetEnv(os.path.expanduser('~/CLionProjects/bastet-remotable/cmake-build-debug/bastet'), speed=32)
+
+
+class CtrlCLogger(Callback):
+    def on_train_end(self, log):
+        self.got_ctrl_c = log['did_abort']
 
 
 if __name__ == "__main__":
