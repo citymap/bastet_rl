@@ -38,7 +38,7 @@ class BastetClient(object):
                 break
 
     def send_key(self, key_code):
-        print('send', key_code)
+        # print('send', key_code)
         if isinstance(key_code, int):
             key_code = struct.pack('<I', key_code & 0xffffffff)
         elif isinstance(key_code, str):
@@ -69,11 +69,12 @@ class BastetClient(object):
 class BastetReplayEnv(Env):
     nb_actions = 7
 
-    def __init__(self, bastet_remotable_path='./bastet', host='0', port=13739, speed=32, seeds=None):
+    def __init__(self, bastet_remotable_path='./bastet', host='0', port=13739, speed=32, seeds=None, policy=None):
         super(BastetReplayEnv, self).__init__()
+        self.policy = policy
         self.seeds = seeds
-        self.seeds_iter = iter(self.seeds)
-        self.seed = next(self.seeds_iter)
+        self.game_number = 0
+        self.seed = self.seeds[self.game_number]
 
         self.terminal_pid = run_in_new_terminal([bastet_remotable_path, str(speed), str(port)])
         self.client = BastetClient(host, port)
@@ -162,10 +163,11 @@ class BastetReplayEnv(Env):
                 info = self.client.recv_info()
                 assert info['type'] == 'send_me_a_key'
                 try:
-                    self.seed = next(self.seeds_iter)
-                except StopIteration:
-                    self.seeds_iter = iter(self.seeds)
-                    self.seed = next(self.seeds_iter)
+                    self.game_number += 1
+                    self.seed = self.seeds[self.game_number]
+                except IndexError:
+                    # print('end of games')
+                    raise KeyboardInterrupt()
                 self.done = True
                 break
             elif info_type == 'keys':
@@ -216,21 +218,58 @@ def build_model(bastet_env):
     return Model((visual_input, scalar_input), fully_connected)
 
 
+class ReplayPolicy(BoltzmannQPolicy):
+    def __init__(self, move_set):
+        super(ReplayPolicy, self).__init__()
+        self.move_set = move_set
+        self.game_number = 0
+        self.moves = iter(self.move_set[self.game_number])
+
+    def select_action(self, q_values):
+        try:
+            action = next(self.moves)
+        except StopIteration:
+            # print('end of moves')
+            try:
+                self.game_number += 1
+                self.moves = iter(self.move_set[self.game_number])
+            except IndexError:
+                # print('end of games')
+                raise KeyboardInterrupt()
+            action = next(self.moves)
+        return action
+
+    def reset(self):
+        self.game_number = 0
+        self.moves = iter(self.move_set[self.game_number])
+
+    def set_game(self, number):
+        self.game_number = number
+        self.moves = iter(self.move_set[self.game_number])
+
+
 def main():
     memory = SequentialMemory(limit=10000, window_length=1)
     with open(os.path.expanduser('~/CLionProjects/bastet-remotable/cmake-build-debug/bastet.rep')) as f:
-        replay_content = re.sub(r'66', r'6', f.read())
+        replay_content = f.read()
+
     seeds = []
     moves = []
     for game in replay_content.splitlines():
         seed, move = game.split(' ', 1)
         seeds.append(int(seed))
-        moves.append([int(c) for c in move])
+        blocks = []
+        for block in move.split('7'):
+            if not block.endswith('1'):
+                block += '1'
+            block = block.replace('6', '')
+            blocks.extend(int(c) for c in block)
+        moves.append(blocks)
 
     ports = iter(itertools.cycle((13738, 13748, 13758)))
+    policy = BoltzmannQPolicy()
     env = BastetReplayEnv(os.path.expanduser('~/CLionProjects/bastet-remotable/cmake-build-debug/bastet'),
                           speed=20, seeds=seeds, port=next(ports))
-    policy = BoltzmannQPolicy()
     model = build_model(env)
     processor = MultiInputProcessor(nb_inputs=2)
     dqn = DQNAgent(model=model, nb_actions=env.nb_actions, memory=memory, processor=processor,
@@ -238,11 +277,17 @@ def main():
                    # enable_dueling_network=True, dueling_type='avg',
                    # target_model_update=1e-2,
                    policy=policy)
-    dqn.compile(Adam(lr=1e-1), metrics=['mae'])
+    dqn.compile(Adam(lr=1e-3), metrics=['mae'])
     if os.path.exists("./save/single-dqn.h5"):
         dqn.load_weights("./save/single-dqn.h5")
 
-    dqn.test(env, 10)
+    ctrl_c_logger = CtrlCLogger()
+    dqn.test(env, nb_episodes=3)
+
+
+class CtrlCLogger(Callback):
+    def on_train_end(self, log):
+        self.got_ctrl_c = log['did_abort']
 
 
 if __name__ == "__main__":

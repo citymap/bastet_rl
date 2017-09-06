@@ -69,11 +69,12 @@ class BastetClient(object):
 class BastetReplayEnv(Env):
     nb_actions = 7
 
-    def __init__(self, bastet_remotable_path='./bastet', host='0', port=13739, speed=32, seeds=None):
+    def __init__(self, bastet_remotable_path='./bastet', host='0', port=13739, speed=32, seeds=None, policy=None):
         super(BastetReplayEnv, self).__init__()
+        self.policy = policy
         self.seeds = seeds
-        self.seeds_iter = iter(self.seeds)
-        self.seed = next(self.seeds_iter)
+        self.game_number = 0
+        self.seed = self.seeds[self.game_number]
 
         self.terminal_pid = run_in_new_terminal([bastet_remotable_path, str(speed), str(port)])
         self.client = BastetClient(host, port)
@@ -162,10 +163,11 @@ class BastetReplayEnv(Env):
                 info = self.client.recv_info()
                 assert info['type'] == 'send_me_a_key'
                 try:
-                    self.seed = next(self.seeds_iter)
-                except StopIteration:
-                    self.seeds_iter = iter(self.seeds)
-                    self.seed = next(self.seeds_iter)
+                    self.game_number += 1
+                    self.seed = self.seeds[self.game_number]
+                except IndexError:
+                    # print('end of games')
+                    raise KeyboardInterrupt()
                 self.done = True
                 break
             elif info_type == 'keys':
@@ -220,8 +222,8 @@ class ReplayPolicy(BoltzmannQPolicy):
     def __init__(self, move_set):
         super(ReplayPolicy, self).__init__()
         self.move_set = move_set
-        self.games = iter(move_set)
-        self.moves = iter(next(self.games))
+        self.game_number = 0
+        self.moves = iter(self.move_set[self.game_number])
 
     def select_action(self, q_values):
         try:
@@ -229,40 +231,46 @@ class ReplayPolicy(BoltzmannQPolicy):
         except StopIteration:
             # print('end of moves')
             try:
-                self.moves = iter(next(self.games))
-            except StopIteration:
+                self.game_number += 1
+                self.moves = iter(self.move_set[self.game_number])
+            except IndexError:
                 # print('end of games')
                 raise KeyboardInterrupt()
             action = next(self.moves)
         return action
 
     def reset(self):
-        self.games = iter(self.move_set)
-        self.moves = iter(next(self.games))
+        self.game_number = 0
+        self.moves = iter(self.move_set[self.game_number])
+
+    def set_game(self, number):
+        self.game_number = number
+        self.moves = iter(self.move_set[self.game_number])
 
 
 def main():
     memory = SequentialMemory(limit=10000, window_length=1)
     with open(os.path.expanduser('~/CLionProjects/bastet-remotable/cmake-build-debug/bastet.rep')) as f:
-        replay_content = re.sub(r'66', r'6', f.read())
-        replay_content = re.sub(r'66', r'6', replay_content)
-        replay_content = re.sub(r'66', r'6', replay_content)
-        replay_content = re.sub(r'66', r'6', replay_content)
-        replay_content = re.sub(r'66', r'6', replay_content)
-        replay_content = re.sub(r'66', r'6', replay_content)
-        replay_content = re.sub(r'66', r'6', replay_content)
-        replay_content = re.sub(r'66', r'6', replay_content)
+        replay_content = f.read()
+
     seeds = []
     moves = []
     for game in replay_content.splitlines():
         seed, move = game.split(' ', 1)
         seeds.append(int(seed))
-        moves.append([int(c) for c in move])
+        blocks = []
+        for block in move.split('7'):
+            if not block.endswith('1'):
+                block += '1'
+            block = block.replace('6', '')
+            blocks.extend(int(c) for c in block)
+        moves.append(blocks)
 
     ports = iter(itertools.cycle((13736, 13746, 13756)))
-    env = BastetReplayEnv(os.path.expanduser('~/CLionProjects/bastet-remotable/cmake-build-debug/bastet'),
-                          speed=20, seeds=seeds, port=next(ports))
     policy = ReplayPolicy(moves)
+    bastet_executable = os.path.expanduser('~/CLionProjects/bastet-headless/cmake-build-debug/bastet')
+    env = BastetReplayEnv(bastet_executable,
+                          speed=20, seeds=seeds, port=next(ports), policy=policy)
     model = build_model(env)
     processor = MultiInputProcessor(nb_inputs=2)
     dqn = DQNAgent(model=model, nb_actions=env.nb_actions, memory=memory, processor=processor,
@@ -276,10 +284,10 @@ def main():
 
     ctrl_c_logger = CtrlCLogger()
     while True:
-        dqn.fit(env, nb_steps=10000, visualize=False, verbose=2, callbacks=[ctrl_c_logger])
+        dqn.fit(env, nb_steps=10000, visualize=False, verbose=1, callbacks=[ctrl_c_logger])
         if not ctrl_c_logger.got_ctrl_c:
-            env = BastetReplayEnv(os.path.expanduser('~/CLionProjects/bastet-remotable/cmake-build-debug/bastet'),
-                          speed=20, seeds=seeds, port=next(ports))
+            env = BastetReplayEnv(bastet_executable,
+                                  speed=20, seeds=seeds, port=next(ports))
         dqn.save_weights("./save/single-dqn.h5", overwrite=True)
         policy.reset()
 
