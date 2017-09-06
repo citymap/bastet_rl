@@ -94,6 +94,8 @@ class BastetReplayEnv(Env):
             pass
 
     def _reset(self):
+        if self.policy is not None:
+            self.policy.set_game(self.game_number)
         self.done = False
         self.well = np.zeros((self.well_height, self.well_width))
         self.block_area = np.zeros((self.well_height, self.well_width))
