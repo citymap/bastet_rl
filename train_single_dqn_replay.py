@@ -263,6 +263,7 @@ def main():
             if not block.endswith('1'):
                 block += '1'
             block = block.replace('6', '')
+            block = block.replace('4444', '')
             blocks.extend(int(c) for c in block)
         moves.append(blocks)
 
