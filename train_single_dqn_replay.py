@@ -247,7 +247,11 @@ class ReplayPolicy(BoltzmannQPolicy):
 
     def set_game(self, number):
         self.game_number = number
-        self.moves = iter(self.move_set[self.game_number])
+        try:
+            self.moves = iter(self.move_set[self.game_number])
+        except IndexError:
+            # print('end of games')
+            raise KeyboardInterrupt()
 
 
 def main():
