@@ -37,7 +37,7 @@ class BastetClient(object):
                 break
 
     def send_key(self, key_code):
-        # print('send', key_code)
+        print('send', key_code)
         if isinstance(key_code, int):
             key_code = struct.pack('<I', key_code & 0xffffffff)
         elif isinstance(key_code, str):
@@ -196,8 +196,9 @@ def build_model(bastet_env):
     # Neural Net for Deep-Q learning Model
     visual_input = Input((1, 2, bastet_env.well_height, bastet_env.well_width))
     conv_layers = Reshape((2, bastet_env.well_height, bastet_env.well_width))(visual_input)
-    conv_layers = Conv2D(32, (3, 3), activation='relu', data_format='channels_first')(conv_layers)
-    conv_layers = Conv2D(32, (3, 3), activation='relu')(conv_layers)
+    conv_layers = Conv2D(32, (5, 5), activation='relu', data_format='channels_first')(conv_layers)
+    conv_layers = MaxPooling2D(pool_size=(2, 2))(conv_layers)
+    conv_layers = Conv2D(64, (3, 3), activation='relu')(conv_layers)
     conv_layers = MaxPooling2D(pool_size=(2, 2))(conv_layers)
     conv_layers = Dropout(0.25)(conv_layers)
     conv_layers = Flatten()(conv_layers)
@@ -206,38 +207,12 @@ def build_model(bastet_env):
     scalar_flatten = Flatten()(scalar_input)
 
     fully_connected = concatenate([conv_layers, scalar_flatten])
-    fully_connected = Dense(10, activation='relu')(fully_connected)
+    fully_connected = Dense(256, activation='relu')(fully_connected)
     fully_connected = Dropout(0.7)(fully_connected)
-    fully_connected = Dense(20, activation='relu')(fully_connected)
+    fully_connected = Dense(256, activation='relu')(fully_connected)
     fully_connected = Dropout(0.7)(fully_connected)
-    fully_connected = Dense(20, activation='relu')(fully_connected)
-    fully_connected = Dense(bastet_env.nb_actions, activation='linear')(fully_connected)
+    fully_connected = Dense(bastet_env.nb_actions, activation='relu')(fully_connected)
     return Model((visual_input, scalar_input), fully_connected)
-
-
-class ReplayPolicy(BoltzmannQPolicy):
-    def __init__(self, move_set):
-        super(ReplayPolicy, self).__init__()
-        self.move_set = move_set
-        self.games = iter(move_set)
-        self.moves = iter(next(self.games))
-
-    def select_action(self, q_values):
-        try:
-            action = next(self.moves)
-        except StopIteration:
-            # print('end of moves')
-            try:
-                self.moves = iter(next(self.games))
-            except StopIteration:
-                # print('end of games')
-                raise KeyboardInterrupt()
-            action = next(self.moves)
-        return action
-
-    def reset(self):
-        self.games = iter(self.move_set)
-        self.moves = iter(next(self.games))
 
 
 def main():
@@ -251,10 +226,10 @@ def main():
         seeds.append(int(seed))
         moves.append([int(c) for c in move])
 
-    ports = iter(itertools.cycle((13739, 13749, 13759)))
+    ports = iter(itertools.cycle((13738, 13748, 13758)))
     env = BastetReplayEnv(os.path.expanduser('~/CLionProjects/bastet-remotable/cmake-build-debug/bastet'),
                           speed=20, seeds=seeds, port=next(ports))
-    policy = ReplayPolicy(moves)
+    policy = BoltzmannQPolicy()
     model = build_model(env)
     processor = MultiInputProcessor(nb_inputs=2)
     dqn = DQNAgent(model=model, nb_actions=env.nb_actions, memory=memory, processor=processor,
@@ -266,7 +241,7 @@ def main():
     if os.path.exists("./save/maze-dqn.h5"):
         dqn.load_weights("./save/maze-dqn.h5")
 
-    dqn.test(env)
+    dqn.test(env, 10)
 
 
 if __name__ == "__main__":

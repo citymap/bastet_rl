@@ -196,8 +196,9 @@ def build_model(bastet_env):
     # Neural Net for Deep-Q learning Model
     visual_input = Input((1, 2, bastet_env.well_height, bastet_env.well_width))
     conv_layers = Reshape((2, bastet_env.well_height, bastet_env.well_width))(visual_input)
-    conv_layers = Conv2D(32, (3, 3), activation='relu', data_format='channels_first')(conv_layers)
-    conv_layers = Conv2D(32, (3, 3), activation='relu')(conv_layers)
+    conv_layers = Conv2D(32, (5, 5), activation='relu', data_format='channels_first')(conv_layers)
+    conv_layers = MaxPooling2D(pool_size=(2, 2))(conv_layers)
+    conv_layers = Conv2D(64, (3, 3), activation='relu')(conv_layers)
     conv_layers = MaxPooling2D(pool_size=(2, 2))(conv_layers)
     conv_layers = Dropout(0.25)(conv_layers)
     conv_layers = Flatten()(conv_layers)
@@ -206,12 +207,11 @@ def build_model(bastet_env):
     scalar_flatten = Flatten()(scalar_input)
 
     fully_connected = concatenate([conv_layers, scalar_flatten])
-    fully_connected = Dense(10, activation='relu')(fully_connected)
+    fully_connected = Dense(256, activation='relu')(fully_connected)
     fully_connected = Dropout(0.7)(fully_connected)
-    fully_connected = Dense(20, activation='relu')(fully_connected)
+    fully_connected = Dense(256, activation='relu')(fully_connected)
     fully_connected = Dropout(0.7)(fully_connected)
-    fully_connected = Dense(20, activation='relu')(fully_connected)
-    fully_connected = Dense(bastet_env.nb_actions, activation='linear')(fully_connected)
+    fully_connected = Dense(bastet_env.nb_actions, activation='relu')(fully_connected)
     return Model((visual_input, scalar_input), fully_connected)
 
 
@@ -266,10 +266,19 @@ def main():
     if os.path.exists("./save/maze-dqn.h5"):
         dqn.load_weights("./save/maze-dqn.h5")
 
+    ctrl_c_logger = CtrlCLogger()
     while True:
-        dqn.fit(env, nb_steps=100000, visualize=False, verbose=1)
+        dqn.fit(env, nb_steps=10000, visualize=False, verbose=2, callbacks=[ctrl_c_logger])
+        if not ctrl_c_logger.got_ctrl_c:
+            env = BastetReplayEnv(os.path.expanduser('~/CLionProjects/bastet-remotable/cmake-build-debug/bastet'),
+                          speed=20, seeds=seeds, port=next(ports))
         dqn.save_weights("./save/maze-dqn.h5", overwrite=True)
         policy.reset()
+
+
+class CtrlCLogger(Callback):
+    def on_train_end(self, log):
+        self.got_ctrl_c = log['did_abort']
 
 
 if __name__ == "__main__":
